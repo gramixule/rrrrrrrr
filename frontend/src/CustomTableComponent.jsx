@@ -1,8 +1,8 @@
-// src/CustomTableComponent.jsx
 import React from "react";
 import CustomButtonComponent from "./CustomButtonComponent";
+import "./CustomTableComponent.css";
 
-const CustomTableComponent = ({ data, onDelete, onYes }) => {
+const CustomTableComponent = ({ data, onDelete, onYes, onSendToEmployee }) => {
   return (
     <table className="custom-table">
       <thead>
@@ -21,8 +21,8 @@ const CustomTableComponent = ({ data, onDelete, onYes }) => {
         </tr>
       </thead>
       <tbody>
-        {data.map((row) => (
-          <tr key={row.ID}>
+        {data.map((row, index) => (
+          <tr key={row.ID} className={index % 2 === 0 ? "even-row" : "odd-row"}>
             <td>{row.ID}</td>
             <td>{row.Zone}</td>
             <td>{row.Price}</td>
@@ -34,11 +34,7 @@ const CustomTableComponent = ({ data, onDelete, onYes }) => {
             <td>{row["Days Since Posted"]}</td>
             <td>{row["Date and Time Posted"]}</td>
             <td>
-              <CustomButtonComponent
-                row={row}
-                onDelete={onDelete}
-                onYes={onYes}
-              />
+              <CustomButtonComponent row={row} onDelete={onDelete} onYes={onYes} onSendToEmployee={onSendToEmployee} />
             </td>
           </tr>
         ))}

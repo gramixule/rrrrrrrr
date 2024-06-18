@@ -1,25 +1,66 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session, send_from_directory
 from flask_cors import CORS
-import pandas as pd
 import logging
 import os
+import pandas as pd
 import numpy as np
 import re
+from werkzeug.security import generate_password_hash, check_password_hash
 
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})  # Ensure CORS allows requests from localhost:3000
+app = Flask(__name__, static_folder='../frontend/build', static_url_path='/')
+CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+app.secret_key = os.environ.get('SECRET_KEY', 'supersecretkey')  # For session management
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
+# In-memory user store for demo purposes
+users = {
+    "admin": generate_password_hash("adminpassword"),
+    "employee": generate_password_hash("employeepassword")
+}
+
+# In-memory store for employee data and additional details
+employee_data = []
+admin_data = []
+additional_details = {}
+
+
+def markAsNew(data):
+    data['isNew'] = True
+    return data
+
 
 @app.route('/')
-def home():
-    return "Welcome to the Flask Backend!"
+def serve():
+    return send_from_directory(app.static_folder, 'index.html')
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    if username in users and check_password_hash(users[username], password):
+        session['user'] = username
+        session['role'] = 'admin' if username == 'admin' else 'employee'
+        return jsonify({"message": "Login successful", "role": session['role']}), 200
+    else:
+        return jsonify({"message": "Invalid credentials"}), 401
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.pop('user', None)
+    session.pop('role', None)
+    return jsonify({"message": "Logout successful"}), 200
 
 
 @app.route('/api/data', methods=['POST'])
 def get_data():
+    if 'user' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+
     data = request.get_json()
     if data.get('data') == 'trigger':
         app.logger.info('Special input received!')
@@ -38,18 +79,22 @@ def extract_numbers_before_mp(text):
         else:
             return None
     except Exception as e:
-        print(f"Error occurred while extracting numbers before 'mp': {e}")
+        app.logger.error(f"Error occurred while extracting numbers before 'mp': {e}")
         return None
 
 
 @app.route('/api/convert', methods=['GET'])
 def convert_xlsx_to_json():
+    if 'user' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+
     xlsx_path = os.path.join(os.path.dirname(__file__), '123.xlsx')
     try:
+        app.logger.info(f"Loading Excel file from: {xlsx_path}")
         df = pd.read_excel(xlsx_path)
 
         # Log DataFrame to inspect its structure
-        app.logger.info(f"DataFrame: {df}")
+        app.logger.info(f"DataFrame loaded: {df}")
 
         # Ensure correct column headers
         df.columns = ['ID', 'Zone', 'Price', 'Type', 'Square Meters', 'Description', 'Proprietor', 'Phone Number',
@@ -75,8 +120,10 @@ def convert_xlsx_to_json():
 
         # Log JSON Data
         app.logger.info(f"JSON Data: {json_data}")
-        app.logger.info(f"JSON Data Type: {type(json_data)}")
-        app.logger.info(f"Is JSON Data an Array: {isinstance(json_data, list)}")
+
+        # Update the in-memory admin_data
+        global admin_data
+        admin_data = json_data
 
         # Return JSON response
         return jsonify(json_data)
@@ -84,9 +131,11 @@ def convert_xlsx_to_json():
         app.logger.error('Error processing the XLSX file', exc_info=True)
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/api/delete', methods=['POST'])
 def delete_row():
+    if 'user' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+
     data = request.get_json()
     row_id = data.get('id')
 
@@ -96,14 +145,71 @@ def delete_row():
         df.columns = ['ID', 'Zone', 'Price', 'Type', 'Square Meters', 'Description', 'Proprietor', 'Phone Number',
                       'Days Since Posted', 'Date and Time Posted']
 
+        # Delete the row from the DataFrame
         df = df[df['ID'] != row_id]
 
+        # Save the updated DataFrame back to the Excel file
         df.to_excel(xlsx_path, index=False)
+
+        # Update the in-memory admin_data
+        global admin_data
+        admin_data = df.to_dict(orient='records')
 
         return jsonify({'status': 'success'})
     except Exception as e:
         app.logger.error('Error deleting row from the XLSX file', exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/employee_data', methods=['GET'])
+def get_employee_data():
+    if 'user' not in session or session.get('role') != 'employee':
+        return jsonify({'message': 'Unauthorized'}), 401
+    return jsonify(employee_data)
+
+
+@app.route('/api/send_to_employee', methods=['POST'])
+def send_to_employee():
+    if 'user' not in session or session.get('role') != 'admin':
+        return jsonify({'message': 'Unauthorized'}), 401
+    data = request.get_json()
+    employee_data.append(data)
+    global admin_data
+    admin_data = [row for row in admin_data if row['ID'] != data['ID']]
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/save_details', methods=['POST'])
+def save_details():
+    if 'user' not in session or session.get('role') != 'employee':
+        return jsonify({'message': 'Unauthorized'}), 401
+    data = request.get_json()
+    app.logger.info(f"Received data for saving: {data}")
+    # Update the corresponding row in employee_data
+    for i, row in enumerate(employee_data):
+        if row['ID'] == data['ID']:
+            data = markAsNew(data)
+            employee_data[i] = data
+            admin_data.append(data)
+            employee_data.pop(i)  # Remove the updated row from employee_data
+            app.logger.info(f"Updated data sent back to admin: {data}")
+            break
+    additional_details[data['ID']] = {
+        "streetNumber": data.get('streetNumber'),
+        "additionalDetails": data.get('additionalDetails')
+    }
+    app.logger.info(f"Additional details saved: {additional_details[data['ID']]}")
+    return jsonify({'status': 'success'})
+
+
+@app.route('/api/get_additional_details', methods=['GET'])
+def get_additional_details():
+    if 'user' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    row_id = request.args.get('id')
+    details = additional_details.get(int(row_id), {})
+    app.logger.info(f"Fetched additional details for ID {row_id}: {details}")
+    return jsonify(details)
 
 
 if __name__ == '__main__':
